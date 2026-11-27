@@ -1,0 +1,11 @@
+{
+  "store": "ersatzteilwelt24",
+  "domain": "www.ebay.de",
+  "run_id": "2026-11-27T14:34:54+00:00",
+  "next_page": 138,
+  "stale_pages": 0,
+  "unique_items": 27314,
+  "complete": true,
+  "updated": "2026-11-27T14:58:26+00:00",
+  "stop_reason": "no next page"
+}
