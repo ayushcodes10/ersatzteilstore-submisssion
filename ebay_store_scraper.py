@@ -27,6 +27,7 @@ DEFAULT_STORES = [
 ITEMS_PER_PAGE = 240
 SORT_NEWEST_FIRST = "10"
 IMAGE_SIZE = 1600
+FULL_PAGE = 200
 
 log = logging.getLogger("ebay_scraper")
 
@@ -68,8 +69,8 @@ def store_domain(store: str) -> str:
     return "www.ebay.de"
 
 
-def listing_url(domain: str, slug: str, page: int) -> str:
-    q = {"_ipg": ITEMS_PER_PAGE, "_pgn": page, "_sop": SORT_NEWEST_FIRST, "rt": "nc"}
+def listing_url(domain: str, slug: str, page: int, sort: str = SORT_NEWEST_FIRST) -> str:
+    q = {"_ipg": ITEMS_PER_PAGE, "_pgn": page, "_sop": sort, "rt": "nc"}
     return f"https://{domain}/str/{slug}?{urlencode(q)}"
 
 
@@ -99,7 +100,7 @@ def dedupe_images(urls: Iterable[str | None]) -> list[str]:
     out, seen = [], set()
     for u in urls:
         u = upscale_image(u)
-        if not u or u.startswith("data:") or "ebayimg.com" not in u:
+        if not u or not u.startswith(("https://", "http://")) or "ebaystatic.com" in u:
             continue
         k = image_key(u)
         if k in seen:
@@ -264,45 +265,82 @@ CARDS_JS = r"""
 }
 """
 
-DETAIL_JS = r"""
-() => {
-  const txt = s => (s && (s.innerText || s.textContent) || '').trim();
+EXTRACT_JS = r"""
+(doc, pageUrl) => {
+  const txt = s => (s && (s.innerText || s.textContent) || '').replace(/\s+/g, ' ').trim();
   const imgs = [];
-  const carousel = document.querySelector('[data-testid="ux-image-carousel"], .ux-image-carousel, .ux-image-carousel-container, #PicturePanel');
-  const scope = carousel || document;
+  const carousel = doc.querySelector('[data-testid="ux-image-carousel"], .ux-image-carousel, .ux-image-carousel-container, #PicturePanel');
+  const scope = carousel || doc;
   scope.querySelectorAll('.ux-image-carousel-item img, [data-testid="ux-image-carousel"] img, #PicturePanel img').forEach(i => {
     imgs.push(i.getAttribute('data-zoom-src') || i.getAttribute('data-src') || i.getAttribute('src'));
-    const ss = i.getAttribute('data-srcset') || i.getAttribute('srcset'); if (ss) imgs.push(ss.split(',').pop().trim().split(' ')[0]);
   });
-  // thumbnail strip, present when the gallery is lazy
-  document.querySelectorAll('.ux-image-grid-item img, .ux-image-filmstrip-carousel img').forEach(i =>
-    imgs.push(i.getAttribute('data-src') || i.getAttribute('src')));
-  const og = document.querySelector('meta[property="og:image"]');
+  doc.querySelectorAll('.ux-image-grid-item img, .ux-image-filmstrip-carousel img').forEach(i =>
+    imgs.push(i.getAttribute('data-zoom-src') || i.getAttribute('data-src') || i.getAttribute('src')));
+  const og = doc.querySelector('meta[property="og:image"]');
   const specs = {};
-  document.querySelectorAll('.ux-layout-section-evo__col, .ux-labels-values, dl.ux-labels-values').forEach(r => {
+  doc.querySelectorAll('.ux-layout-section-evo__col, .ux-labels-values, dl.ux-labels-values').forEach(r => {
     const l = r.querySelector('.ux-labels-values__labels'), v = r.querySelector('.ux-labels-values__values');
     if (l && v) { const k = txt(l).replace(/:$/, ''); if (k && !(k in specs)) specs[k] = txt(v); }
   });
-  const crumbs = [...document.querySelectorAll('nav.breadcrumbs a span, nav.breadcrumbs a, .seo-breadcrumb-text span')]
+  const crumbs = [...doc.querySelectorAll('nav.breadcrumbs a span, nav.breadcrumbs a, .seo-breadcrumb-text span')]
       .map(txt).filter(Boolean);
-  const body = document.body ? document.body.innerText : '';
-  const ended = /Dieses Angebot wurde (vom Verkäufer )?beendet|Der Verkäufer hat diesen Artikel beendet|Angebot beendet|This listing (was ended|has ended)|listing ended/i
-      .test(txt(document.querySelector('.d-statusmessage, .vim-message, [data-testid="d-statusmessage"]')) || body.slice(0, 4000));
-  const canon = (document.querySelector('link[rel="canonical"]') || {}).href || location.href;
-  const idm = canon.match(/\/itm\/(?:[^/?#]+\/)?(\d{9,})/) || location.href.match(/\/itm\/(?:[^/?#]+\/)?(\d{9,})/);
+  const status = txt(doc.querySelector('.d-statusmessage, .vim-message, [data-testid="d-statusmessage"]'));
+  const head = status || txt(doc.body).slice(0, 4000);
+  const ended = /Dieses Angebot wurde (vom Verkäufer )?beendet|Der Verkäufer hat diesen Artikel beendet|Angebot beendet|This listing (was ended|has ended)|listing ended/i.test(head);
+  const canonEl = doc.querySelector('link[rel="canonical"]');
+  const canon = (canonEl && canonEl.getAttribute('href')) || pageUrl;
+  const idm = canon.match(/\/itm\/(?:[^/?#]+\/)?(\d{9,})/) || pageUrl.match(/\/itm\/(?:[^/?#]+\/)?(\d{9,})/);
   return {
     page_item_id: idm ? idm[1] : '',
-    title: txt(document.querySelector('h1.x-item-title__mainTitle, .x-item-title__mainTitle, h1')),
-    price_raw: txt(document.querySelector('.x-price-primary, [data-testid="x-price-primary"], #prcIsum')),
+    title: txt(doc.querySelector('h1.x-item-title__mainTitle, .x-item-title__mainTitle, h1')),
+    price_raw: txt(doc.querySelector('.x-price-primary, [data-testid="x-price-primary"], #prcIsum')),
     images: imgs.filter(Boolean),
-    og_image: og ? og.content : '',
+    og_image: og ? (og.getAttribute('content') || '') : '',
     specs,
     categories: [...new Set(crumbs)],
-    availability: txt(document.querySelector('#qtyAvailability, .x-quantity__availability, [data-testid="x-quantity"] .ux-textspans--SECONDARY')),
+    availability: txt(doc.querySelector('#qtyAvailability, .x-quantity__availability, [data-testid="x-quantity"] .ux-textspans--SECONDARY')),
     ended,
-    doc_title: document.title,
-    url: location.href,
+    doc_title: txt(doc.querySelector('title')),
+    url: pageUrl,
   };
+}
+"""
+
+DETAIL_JS = "() => (" + EXTRACT_JS + ")(document, location.href)"
+
+FETCH_JS = r"""
+async ({ids, parallel, retries}) => {
+  const extract = """ + EXTRACT_JS + r""";
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const results = {};
+  const queue = ids.slice();
+  const one = async (id) => {
+    let last = '';
+    for (let a = 0; a < retries; a++) {
+      try {
+        const r = await fetch('/itm/' + id, {credentials: 'include', redirect: 'follow'});
+        if (/splashui\/captcha/.test(r.url)) return {id, kind: 'captcha'};
+        if (r.status === 200) {
+          const html = await r.text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const t = (doc.querySelector('title') || {}).textContent || '';
+          if (/Sicherheitsmaßnahme|Security Measure|Pardon Our Interruption/i.test(t)) return {id, kind: 'captcha'};
+          return {id, kind: 'ok', data: extract(doc, r.url)};
+        }
+        if (r.status === 404 || r.status === 410) return {id, kind: 'gone', http: r.status};
+        last = 'HTTP ' + r.status;
+      } catch (e) {
+        last = String(e && e.message || e);
+      }
+      await sleep(400 + a * 600 + Math.random() * 400);
+    }
+    return {id, kind: 'blocked', error: last};
+  };
+  const workers = Array.from({length: Math.max(1, parallel)}, async () => {
+    while (queue.length) { const id = queue.shift(); results[id] = await one(id); }
+  });
+  await Promise.all(workers);
+  return ids.map(id => results[id]);
 }
 """
 
@@ -337,6 +375,10 @@ class Config:
     refresh_details: bool
     block_retries: int = 10
     load_images: bool = False
+    detail_mode: str = "fetch"
+    sort: str = SORT_NEWEST_FIRST
+    batch_size: int = 60
+    parallel_fetches: int = 12
     block_abort: int = 60
 
 
@@ -514,7 +556,7 @@ async def scrape_listing(br: Browser, store: str, cfg: Config) -> dict:
     slug, domain = store_slug(store), store_domain(store)
     sdir = cfg.out_dir / "data" / slug
     sdir.mkdir(parents=True, exist_ok=True)
-    state_path = sdir / "listing_state.json"
+    state_path = sdir / ("listing_state.json" if cfg.sort == SORT_NEWEST_FIRST else f"listing_state_sop{cfg.sort}.json")
     state = read_json(state_path, {})
     if state.get("complete"):
         log.info("[%s] listing already complete (%s items). Use --restart-listing to redo.",
@@ -529,7 +571,7 @@ async def scrape_listing(br: Browser, store: str, cfg: Config) -> dict:
     stop_reason = "max pages reached"
     try:
         while page_no <= cfg.max_pages:
-            url = listing_url(domain, slug, page_no)
+            url = listing_url(domain, slug, page_no, cfg.sort)
             await br.goto(page, url)
             data = None
             for _ in range(3):
@@ -573,7 +615,7 @@ async def scrape_listing(br: Browser, store: str, cfg: Config) -> dict:
             if not data["cards"]:
                 stop_reason = "empty page"
                 break
-            if not data["hasNext"]:
+            if not data["hasNext"] and len(data["cards"]) < FULL_PAGE:
                 stop_reason = "no next page"
                 break
             if stale_pages >= 3:
@@ -610,6 +652,15 @@ async def scrape_details(br: Browser, store: str, cfg: Config) -> None:
     log.info("[%s] details: %d to fetch (%d already done)", slug, total, len(details))
     if not total:
         details.close()
+        return
+
+    if cfg.detail_mode == "fetch":
+        try:
+            await scrape_details_fetch(br, slug, store_domain(store), todo, details, cfg)
+        finally:
+            details.close()
+        failed = sum(1 for r in details.records.values() if r.get("status") in ("error", "blocked"))
+        log.info("[%s] details finished (%d failed; re-run to retry them)", slug, failed)
         return
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -668,17 +719,19 @@ async def scrape_details(br: Browser, store: str, cfg: Config) -> None:
 
 
 async def fetch_detail(br: Browser, page, rec: dict) -> dict:
-    item_id = rec["item_id"]
     await br.goto(page, rec["item_url"], referer=f"https://{urlparse(rec['item_url']).netloc}/str/{rec['store']}")
     try:
         await page.wait_for_selector(".x-item-title, h1, .ux-image-carousel", timeout=10000)
     except Exception:
         pass
-    d = await page.evaluate(DETAIL_JS)
+    return build_detail(rec["item_id"], await page.evaluate(DETAIL_JS))
+
+
+def build_detail(item_id: str, d: dict) -> dict:
     images = dedupe_images(d["images"]) or dedupe_images([d["og_image"]])
     specs = {k: clean_spec_value(v) for k, v in d["specs"].items() if k.lower() not in NON_SPEC_KEYS}
     price, cur, price_max = parse_price(d["price_raw"])
-    redirected = d["page_item_id"] and d["page_item_id"] != item_id
+    redirected = bool(d["page_item_id"]) and d["page_item_id"] != item_id
     status = "ended" if (d["ended"] or redirected) else "ok"
     if not d["title"] and not images:
         status = "error"
@@ -692,11 +745,78 @@ async def fetch_detail(br: Browser, page, rec: dict) -> dict:
         "mpn": pick_spec(specs, "Herstellernummer", "MPN", "Manufacturer Part Number"),
         "ean": pick_spec(specs, "EAN", "GTIN"),
         "category_path": " > ".join(c for c in d["categories"] if c.lower() not in ("ebay", "zurück zur startseite")),
-        "availability": re.sub(r"\s+", " ", d["availability"]),
+        "availability": d["availability"],
         "images": images,
         "specs": specs,
         "fetched_at": now_iso(),
     }
+
+
+async def scrape_details_fetch(br: Browser, slug: str, domain: str, todo: list[dict],
+                               details: JsonlStore, cfg: Config) -> None:
+    store_url = f"https://{domain}/str/{slug}"
+    page = await br.new_page()
+    total, done, started = len(todo), 0, time.monotonic()
+    dead_batches = 0
+    try:
+        await br.goto(page, store_url)
+        i = 0
+        while i < total:
+            if br.stop.is_set():
+                raise asyncio.CancelledError()
+            batch = todo[i:i + cfg.batch_size]
+            try:
+                results = await page.evaluate(FETCH_JS, {"ids": [r["item_id"] for r in batch],
+                                                         "parallel": cfg.parallel_fetches,
+                                                         "retries": cfg.block_retries})
+            except Exception as e:
+                log.warning("[%s] batch evaluate failed (%s); reloading store page", slug, str(e).splitlines()[0])
+                await br.goto(page, store_url)
+                continue
+            by_id = {r["item_id"]: r for r in batch}
+            captcha = [r for r in results if r["kind"] == "captcha"]
+            blocked = [r for r in results if r["kind"] == "blocked"]
+            for r in results:
+                rec = by_id[r["id"]]
+                if r["kind"] == "ok":
+                    try:
+                        out = build_detail(rec["item_id"], r["data"])
+                    except Exception as e:
+                        out = {"item_id": rec["item_id"], "status": "error", "error": str(e)[:300], "fetched_at": now_iso()}
+                elif r["kind"] == "gone":
+                    out = {"item_id": rec["item_id"], "status": "ended", "error": f"HTTP {r.get('http')}",
+                           "images": [], "specs": {}, "fetched_at": now_iso()}
+                elif r["kind"] == "blocked":
+                    out = {"item_id": rec["item_id"], "status": "blocked", "error": r.get("error", "")[:300],
+                           "fetched_at": now_iso()}
+                else:
+                    continue
+                details.put(out)
+                done += 1
+            if captcha:
+                log.warning("[%s] CAPTCHA during fetch; opening an item page to solve it", slug)
+                await br.goto(page, by_id[captcha[0]["id"]]["item_url"])
+                await br.goto(page, store_url)
+                continue_from = [by_id[r["id"]] for r in captcha]
+                todo.extend(continue_from)
+                total = len(todo)
+            if len(blocked) == len(batch):
+                dead_batches += 1
+                if dead_batches >= 5:
+                    raise SessionBurnedError("every request in 5 batches was refused; re-run later to resume")
+                wait = 30 * dead_batches
+                log.warning("[%s] whole batch blocked, cooling down %ds", slug, wait)
+                await asyncio.sleep(wait)
+                await br.goto(page, store_url)
+            else:
+                dead_batches = 0
+            i += len(batch)
+            rate = done / max(1e-6, time.monotonic() - started)
+            log.info("[%s] details %d/%d (%.1f/s, %d blocked in batch, ETA %s)", slug, min(i, total), total, rate,
+                     len(blocked), time.strftime("%H:%M:%S", time.gmtime((total - i) / rate if rate else 0)))
+            await br.polite_pause(0.3)
+    finally:
+        await page.close()
 
 
 COLUMNS = [
@@ -814,6 +934,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--block-retries", type=int, default=10, help="403 retries per URL")
     p.add_argument("--block-abort", type=int, default=60, help="abort after this many 403s in a row")
     p.add_argument("--nav-timeout", type=int, default=45)
+    p.add_argument("--sort", default=SORT_NEWEST_FIRST, choices=["10", "15", "16", "12"],
+                   help="store sort for the listing pass: 10 newest, 15 price asc, 16 price desc, 12 best match; "
+                        "extra passes with another sort add any items the first pass missed")
+    p.add_argument("--detail-mode", choices=["fetch", "browser"], default="fetch",
+                   help="fetch: parallel in-tab HTTP fetches (fast); browser: navigate each item page (slow, most robust)")
+    p.add_argument("--parallel-fetches", type=int, default=12, help="simultaneous item fetches in fetch mode")
+    p.add_argument("--batch-size", type=int, default=60, help="items per fetch batch (progress is saved per batch)")
     p.add_argument("--load-images", action="store_true", help="let the browser download images (slower)")
     p.add_argument("--restart-listing", action="store_true", help="re-crawl the store grids")
     p.add_argument("--refresh-details", action="store_true", help="re-fetch item pages already done")
@@ -847,12 +974,13 @@ async def run(a: argparse.Namespace) -> int:
     cfg = Config(out_dir=out, profile_dir=Path(a.profile).resolve(), headless=a.headless,
                  delay=(a.delay[0], a.delay[1]), concurrency=a.concurrency, max_pages=a.max_pages,
                  max_items=a.max_items, captcha_timeout=a.captcha_timeout, retries=a.retries, block_retries=a.block_retries, block_abort=a.block_abort, load_images=a.load_images,
+                 detail_mode=a.detail_mode, sort=a.sort, parallel_fetches=a.parallel_fetches, batch_size=a.batch_size,
                  nav_timeout=a.nav_timeout, refresh_details=a.refresh_details)
     if a.restart_listing:
         for slug in a.slugs:
             sdir = out / "data" / slug
-            for f in ("listing_state.json", "listing.jsonl"):
-                (sdir / f).unlink(missing_ok=True)
+            for f in [*sdir.glob("listing_state*.json"), sdir / "listing.jsonl"]:
+                f.unlink(missing_ok=True)
 
     failures: dict[str, str] = {}
     if {"listing", "details"} & set(a.phases):

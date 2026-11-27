@@ -16,3 +16,6 @@ service_account.json
 graphify-out/
 .gstack/
 .DS_Store
+run_details.sh
+output/all_stores.json
+*.out

@@ -67,10 +67,13 @@ def test_dedupe_images_keeps_order_and_drops_junk():
         None,
         "https://ir.ebaystatic.com/spacer.gif",
         "https://i.ebayimg.com/images/g/BBB/s-l500.jpg",
+        "https://kremplshop.de/file/shopimage/20488946586",
+        "https://kremplshop.de/file/shopimage/20488946586",
     ]
     assert s.dedupe_images(urls) == [
         "https://i.ebayimg.com/images/g/AAA/s-l1600.jpg",
         "https://i.ebayimg.com/images/g/BBB/s-l1600.jpg",
+        "https://kremplshop.de/file/shopimage/20488946586",
     ]
 
 
@@ -130,3 +133,13 @@ def test_export_merges_listing_and_details(tmp_path):
     csv_text = (tmp_path / "output" / "shop.csv").read_text(encoding="utf-8-sig")
     assert "'=HYPERLINK" in csv_text
     assert (tmp_path / "output" / "all_stores.xlsx").exists()
+
+
+def test_build_detail_ended_and_redirect():
+    d = {"images": [], "og_image": "https://i.ebayimg.com/images/g/Z/s-l500.jpg", "specs": {"Marke": "Bosch"},
+         "price_raw": "EUR 9,99", "page_item_id": "999999999", "ended": False, "title": "T",
+         "categories": ["eBay", "Haushaltsgeräte"], "availability": ""}
+    out = s.build_detail("111111111", d)
+    assert out["status"] == "ended" and out["redirected_to"] == "999999999"
+    assert out["images"] == ["https://i.ebayimg.com/images/g/Z/s-l1600.jpg"]
+    assert out["brand"] == "Bosch" and out["category_path"] == "Haushaltsgeräte" and out["price"] == 9.99
