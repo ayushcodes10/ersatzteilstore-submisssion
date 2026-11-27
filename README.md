@@ -1,38 +1,45 @@
-# eBay Store Scraper
+# eBay Store Product Scraper
 
-Scrapes every product, including the full image gallery, from eBay stores:
+A resumable Python tool that extracts the complete product catalogue of eBay stores, including the image gallery and item specifics of every listing, and exports it as CSV, XLSX and JSON for analysis or import into Google Sheets.
 
-- https://www.ebay.de/str/etvggmbhersatzteilehausgerate
-- https://www.ebay.de/str/k11ersatzteilshop
-- https://www.ebay.de/str/ersatzteilwelt24
+## Stores covered
 
-Output: one CSV per store, a combined CSV / JSON / XLSX, and a `summary.json`, ready to import into Google Sheets.
+| Store | Products |
+|---|---|
+| [etvggmbhersatzteilehausgerate](https://www.ebay.de/str/etvggmbhersatzteilehausgerate) | 22,859 |
+| [k11ersatzteilshop](https://www.ebay.de/str/k11ersatzteilshop) | 22,709 |
+| [ersatzteilwelt24](https://www.ebay.de/str/ersatzteilwelt24) | 27,314 |
+| **Total** | **72,882** |
 
-## Why a real browser
-
-eBay is protected by Akamai Bot Manager. Plain HTTP clients (requests, curl, TLS-impersonating clients) and stock headless browsers receive `HTTP 403`. The scraper drives an installed Google Chrome through Playwright with a persistent profile, which passes the checks. If eBay shows a CAPTCHA, the run pauses until it is solved in the open window, and the solved session is kept in the profile for later runs.
+The results are in [`output/`](output): one CSV per store, `all_stores.csv`, `all_stores.xlsx` (one tab per store), and `summary.json`.
 
 ## How it works
 
-| Phase | What it does | Output |
+The scraper runs in three independent phases. Each phase saves its progress continuously and can be re-run at any time.
+
+| Phase | Description | Output |
 |---|---|---|
-| `listing` | Pages through the store grid (`_ipg=240`, newest first so pagination stays stable while sellers list new items). Records item id, title, price and main image for every product, and stops at the real end of the store. | `data/<store>/listing.jsonl` |
-| `details` | Opens every item page and extracts the complete gallery (1600 px), condition, brand, MPN, EAN, category path, availability, all item specifics, and whether the listing has ended. | `data/<store>/details.jsonl` |
-| `export` | Merges both phases. Listing data is the fallback for items whose detail page could not be fetched. | `output/*.csv`, `output/all_stores.json`, `output/all_stores.xlsx`, `output/summary.json` |
+| `listing` | Walks every page of the store catalogue (200 products per page) and records the item ID, title, price, link and main image of each product. | `data/<store>/listing.jsonl` |
+| `details` | Retrieves each product page and extracts the full image gallery (1600 px), condition, brand, MPN, EAN, category path, availability and all item specifics. | `data/<store>/details.jsonl` |
+| `export` | Merges both phases into the final files. | `output/` |
 
-### Reliability
+Pages are loaded with Playwright in a regular Chrome browser. In the `details` phase, product pages are requested in parallel and parsed without being rendered, which keeps the run fast.
 
-- **Resumable.** Every record is appended and fsynced as soon as it is scraped. After a crash, Ctrl+C, reboot or block, re-running the same command continues where it stopped. A torn last line from a crash is skipped.
-- **Deduplicated** by eBay item id, so repeats from shifting pagination never produce duplicate rows.
-- **403 handling.** Akamai rejects a share of requests at random. Each URL gets quick jittered retries, then a cooldown and warm-up through the eBay home page. The run aborts cleanly (and stays resumable) only if 403s continue for a long time across all tabs.
-- **CAPTCHA handling.** The run pauses with a terminal bell until the CAPTCHA is solved. In `--headless` mode it exits with instructions instead.
-- **Failure isolation.** One bad item is recorded as `error` / `blocked` and retried on the next run; it never stops the scrape. Ended or redirected listings are marked `ended`.
-- **Safe output.** CSV and JSON files are written atomically. Cells that start with `=`, `+`, `-` or `@` are escaped to prevent formula injection, and long cells are truncated to stay under the Google Sheets 50,000-character limit.
-- **Polite.** Random delays between requests and a small number of tabs. The browser skips downloading images, fonts and media because only their URLs are needed.
+## Design
 
-## Setup
+- **Resumable.** Every record is written to disk as soon as it is collected. An interrupted run continues from where it stopped when restarted with the same command.
+- **Complete pagination.** The catalogue is read in a stable sort order (newest first) so items cannot shift between pages during a run. A run ends only on a genuinely short last page or on repeated pages with no new items. An optional second pass with a different sort order (`--sort`) adds any items the first pass did not see.
+- **Deduplicated.** Records are keyed by eBay item ID, so each product appears exactly once.
+- **Fault tolerant.** Network errors and server errors are retried with jittered exponential backoff. An item that cannot be retrieved is recorded with its status and retried on the next run, without stopping the rest.
+- **Accurate images.** Gallery images are normalised to the largest available size and deduplicated. Images hosted outside eBay are kept.
+- **Ended listings** are detected and marked `ended`.
+- **Safe output.** Files are written atomically. Cells that could be interpreted as spreadsheet formulas are escaped, and cell lengths stay within the Google Sheets limit.
+- **Considerate.** Requests are paced with random delays and limited concurrency.
 
-Python 3.10+ and Google Chrome are required. Without Chrome, the bundled Chromium is used as a fallback.
+## Requirements
+
+- Python 3.10 or newer
+- Google Chrome (the Chromium build bundled with Playwright is used if Chrome is not installed)
 
 ```bash
 python -m venv .venv
@@ -43,60 +50,86 @@ python -m playwright install chromium
 
 ## Usage
 
+Run all stores through all phases:
+
 ```bash
 python ebay_store_scraper.py
 ```
 
-Runs all three stores through all three phases. Useful options:
+Common options:
 
 ```bash
+python ebay_store_scraper.py --stores k11ersatzteilshop
 python ebay_store_scraper.py --phases listing export
-python ebay_store_scraper.py --stores k11ersatzteilshop --phases details export
+python ebay_store_scraper.py --phases details --parallel-fetches 10
+python ebay_store_scraper.py --phases listing --sort 15
 python ebay_store_scraper.py --max-pages 1 --max-items 20
-python ebay_store_scraper.py --concurrency 3 --delay 0.8 2.0
-python ebay_store_scraper.py --restart-listing
-python ebay_store_scraper.py --refresh-details
+python ebay_store_scraper.py --phases export
 ```
 
-On macOS, use `caffeinate -i python ebay_store_scraper.py` for long runs so the machine does not go to sleep. Run `python ebay_store_scraper.py --help` for every flag.
+| Option | Purpose |
+|---|---|
+| `--stores` | Store URLs or names (defaults to the three stores above) |
+| `--phases` | Any of `listing`, `details`, `export` |
+| `--sort` | Catalogue sort order for the listing pass: `10` newest, `15` price ascending, `16` price descending, `12` best match |
+| `--detail-mode` | `fetch` (parallel, default) or `browser` (opens each page individually) |
+| `--parallel-fetches`, `--batch-size` | Throughput of the details phase |
+| `--delay MIN MAX` | Random pause between requests, in seconds |
+| `--max-pages`, `--max-items` | Limits for test runs |
+| `--restart-listing`, `--refresh-details` | Discard saved progress and collect again |
+| `--headless` | Run without a browser window |
 
-## Output columns
+Run `python ebay_store_scraper.py --help` for the full list. On macOS, prefix long runs with `caffeinate -i` so the machine does not sleep.
+
+## Output format
 
 | Column | Description |
 |---|---|
-| store | store slug |
-| item_id | eBay item number |
-| title | listing title |
-| price, price_max, currency | price (`price_max` is set for variation price ranges) |
-| condition, brand, mpn, ean | from the item specifics |
-| category_path | eBay category breadcrumb |
-| availability | for example "3 verfügbar" |
-| item_url | link to the listing |
-| main_image_url | first gallery image, 1600 px |
-| image_count, image_urls | every gallery image, separated by `" \| "` |
-| item_specifics | all item specifics as JSON |
-| detail_status | `ok`, `ended`, `blocked`, `error` or `not_fetched` |
-| first_seen, details_fetched_at | UTC timestamps |
+| `store` | Store name |
+| `item_id` | eBay item number |
+| `title` | Listing title |
+| `price`, `price_max`, `currency` | Price; `price_max` is set when variations have a price range |
+| `condition`, `brand`, `mpn`, `ean` | From the item specifics |
+| `category_path` | eBay category breadcrumb |
+| `availability` | Quantity information, for example "3 verfügbar" |
+| `item_url` | Link to the listing |
+| `main_image_url` | Main product image, 1600 px |
+| `image_count`, `image_urls` | Every gallery image, separated by `" \| "` |
+| `item_specifics` | All item specifics as JSON |
+| `detail_status` | `ok`, `ended`, `not_fetched`, `blocked` or `error` |
+| `first_seen`, `details_fetched_at` | UTC timestamps |
+
+Every row has a title, price, link and main image. Gallery and item-specific columns are filled for each row whose `detail_status` is `ok`, and running the `details` phase again fills in the rest.
 
 ## Google Sheets
 
-**Manual import.** In the Sheet, choose File > Import > Upload, pick `output/all_stores.csv` (or one store's CSV), then choose "Replace current sheet" or "Insert new sheet".
+**Import.** In Google Sheets, choose File > Import > Upload and select `output/all_stores.csv` or one store's CSV.
 
-**Automatic upload.** This uses a Google Cloud service account:
+**Automated upload.** `sheets_upload.py` writes an "All stores" tab, one tab per store and a "Summary" tab, using a Google Cloud service account:
 
-1. In Google Cloud Console, enable the Google Sheets API.
-2. Create a service account, add a JSON key, and save it as `service_account.json`.
-3. Share the Sheet with the service account's email address as Editor.
+1. Enable the Google Sheets API in a Google Cloud project.
+2. Create a service account, download a JSON key, and save it as `service_account.json`.
+3. Share the spreadsheet with the service account's email address as Editor.
 4. Run:
 
 ```bash
 python sheets_upload.py --sheet "https://docs.google.com/spreadsheets/d/<id>/edit" --image-preview
 ```
 
-It writes an "All stores" tab, one tab per store and a "Summary" tab, in chunks, with retries on API rate limits. `--image-preview` adds an `=IMAGE()` thumbnail column.
+`--image-preview` adds a thumbnail column using `=IMAGE()`.
 
 ## Tests
 
 ```bash
 pytest -q
+```
+
+## Project structure
+
+```
+ebay_store_scraper.py   scraper: listing, details and export phases
+sheets_upload.py        Google Sheets uploader
+tests/                  unit tests
+output/                 exported results
+requirements.txt
 ```
