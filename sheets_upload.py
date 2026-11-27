@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ebay_store_scraper import COLUMNS, _excel_safe
+from ebay_store_scraper import LEADING_COLUMNS, TRAILING_COLUMNS, _excel_safe, flatten, spec_columns
 
 log = logging.getLogger("sheets_upload")
 
@@ -28,10 +28,13 @@ def spreadsheet_id(value: str) -> str:
 
 
 def to_matrix(rows: list[dict], image_preview: bool) -> list[list[Any]]:
-    header = (["image_preview"] if image_preview else []) + COLUMNS
+    spec_cols = spec_columns(rows)
+    columns = LEADING_COLUMNS + spec_cols + TRAILING_COLUMNS
+    header = (["image_preview"] if image_preview else []) + columns
     out: list[list[Any]] = [header]
-    for r in rows:
-        line = [_cell(r.get(c)) for c in COLUMNS]
+    for raw in rows:
+        r = flatten(raw, spec_cols)
+        line = [_cell(r.get(c)) for c in columns]
         if image_preview:
             url = r.get("main_image_url") or ""
             line.insert(0, f'=IMAGE("{url}")' if url.startswith("https://") and '"' not in url else "")
@@ -94,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--credentials", default="service_account.json", help="service account JSON key")
     p.add_argument("--input", default="output/all_stores.json")
     p.add_argument("--image-preview", action="store_true", help="add an =IMAGE() thumbnail column")
-    p.add_argument("--no-store-tabs", action="store_true", help="only write the combined tab")
+    p.add_argument("--no-store-tabs", action="store_true", help="write one combined tab instead of one per store")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
 
@@ -111,11 +114,13 @@ def main(argv: list[str] | None = None) -> int:
     if not rows:
         p.error("no rows to upload")
 
-    tabs: list[tuple[str, list[dict]]] = [("All stores", rows)]
+    tabs: list[tuple[str, list[dict]]] = []
     if not a.no_store_tabs:
         for store in sorted({r["store"] for r in rows}):
             tabs.append((store[:99], [r for r in rows if r["store"] == store]))
-    cells = sum((len(t[1]) + 1) * (len(COLUMNS) + 1) for t in tabs)
+    else:
+        tabs.append(("All stores", rows))
+    cells = sum((len(t[1]) + 1) * 80 for t in tabs)
     if cells > MAX_CELLS:
         log.warning("%d cells exceeds the Sheets limit; writing the combined tab only", cells)
         tabs = tabs[:1]

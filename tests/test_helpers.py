@@ -143,3 +143,43 @@ def test_build_detail_ended_and_redirect():
     assert out["status"] == "ended" and out["redirected_to"] == "999999999"
     assert out["images"] == ["https://i.ebayimg.com/images/g/Z/s-l1600.jpg"]
     assert out["brand"] == "Bosch" and out["category_path"] == "Haushaltsgeräte" and out["price"] == 9.99
+
+
+def test_spec_columns_and_flatten():
+    rows = [{"specs": {"Marke": "Beko", "Artikelzustand": "Neu: Neuer, unbenutzter ... Mehr zum Thema", "Modell": "X"}}] * 3
+    rows += [{"specs": {"Marke": "Bosch", "Selten": "y"}}]
+    cols = s.spec_columns(rows, min_items=2)
+    assert cols[0] == "Artikelzustand" and cols[1] == "Marke" and "Selten" not in cols
+    flat = s.flatten({**rows[0], "title": "t", "item_id": "1"}, cols)
+    assert flat["Marke"] == "Beko" and flat["Artikelzustand"] == "Neu" and flat["title"] == "t"
+    assert list(flat)[:len(s.LEADING_COLUMNS)] == s.LEADING_COLUMNS
+
+
+def test_export_writes_store_tabs(tmp_path):
+    from openpyxl import load_workbook
+    d = tmp_path / "data" / "shop"
+    lst = s.JsonlStore(d / "listing.jsonl")
+    det = s.JsonlStore(d / "details.jsonl")
+    for i in range(25):
+        iid = str(100000000 + i)
+        lst.put({"item_id": iid, "store": "shop", "title": "T", "price": 1.0, "price_max": None, "currency": "EUR",
+                 "image_url": "https://i.ebayimg.com/images/g/A/s-l1600.jpg",
+                 "item_url": f"https://www.ebay.de/itm/{iid}", "first_seen": "t"})
+        det.put({"item_id": iid, "status": "ok", "title": "T", "price": 1.0, "currency": "EUR",
+                 "images": ["https://i.ebayimg.com/images/g/A/s-l1600.jpg"], "specs": {"Marke": "Beko"},
+                 "fetched_at": "t"})
+    lst.close(); det.close()
+    s.export(tmp_path, ["shop"])
+    wb = load_workbook(tmp_path / "output" / "all_stores.xlsx", read_only=True)
+    assert wb.sheetnames == ["shop", "Summary"]
+    header = [c.value for c in next(wb["shop"].iter_rows(max_row=1))]
+    assert "Marke" in header and header.index("Marke") > header.index("image_urls")
+
+
+def test_stripped_page_is_partial_and_not_complete():
+    d = {"images": [], "og_image": "https://i.ebayimg.com/images/g/Z/s-l500.jpg", "specs": {}, "price_raw": "EUR 1,00",
+         "page_item_id": "111111111", "ended": False, "title": "T", "categories": [], "availability": ""}
+    out = s.build_detail("111111111", d)
+    assert out["status"] == "partial" and not s.is_complete(out)
+    assert s.is_complete({"status": "ok", "specs": {"Marke": "X"}, "images": []})
+    assert s.is_complete({"status": "ended"}) and not s.is_complete({"status": "ok", "specs": {}, "images": []})

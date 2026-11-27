@@ -178,6 +178,14 @@ def is_block_page(title: str, url: str, status: int | None) -> str | None:
     return None
 
 
+def is_complete(rec: dict | None) -> bool:
+    if not rec:
+        return False
+    if rec.get("status") == "ended":
+        return True
+    return rec.get("status") == "ok" and bool(rec.get("specs") or rec.get("images"))
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -645,7 +653,7 @@ async def scrape_details(br: Browser, store: str, cfg: Config) -> None:
     listing.close()
     details = JsonlStore(sdir / "details.jsonl")
     todo = [r for r in listing.records.values()
-            if cfg.refresh_details or details.records.get(r["item_id"], {}).get("status") not in ("ok", "ended")]
+            if cfg.refresh_details or not is_complete(details.records.get(r["item_id"]))]
     if cfg.max_items:
         todo = todo[: cfg.max_items]
     total = len(todo)
@@ -735,6 +743,8 @@ def build_detail(item_id: str, d: dict) -> dict:
     status = "ended" if (d["ended"] or redirected) else "ok"
     if not d["title"] and not images:
         status = "error"
+    elif status == "ok" and not specs and not dedupe_images(d["images"]):
+        status = "partial"
     return {
         "item_id": item_id, "status": status,
         "redirected_to": d["page_item_id"] if redirected else "",
@@ -834,7 +844,7 @@ def build_rows(out_dir: Path, slug: str) -> list[dict]:
     rows = []
     for item_id, L in lst.records.items():
         D = det.records.get(item_id, {})
-        ok = D.get("status") in ("ok", "ended")
+        ok = is_complete(D)
         images = D.get("images") if ok and D.get("images") else ([L["image_url"]] if L.get("image_url") else [])
         rows.append({
             "store": slug,
@@ -854,7 +864,8 @@ def build_rows(out_dir: Path, slug: str) -> list[dict]:
             "image_count": len(images),
             "image_urls": " | ".join(images)[:CELL_LIMIT],
             "item_specifics": json.dumps(D.get("specs", {}), ensure_ascii=False)[:CELL_LIMIT] if ok else "",
-            "detail_status": D.get("status", "not_fetched"),
+            "specs": D.get("specs", {}) if ok else {},
+            "detail_status": ("partial" if D.get("status") == "ok" and not ok else D.get("status", "not_fetched")),
             "first_seen": L.get("first_seen", ""),
             "details_fetched_at": D.get("fetched_at", ""),
         })
@@ -868,49 +879,92 @@ def _excel_safe(v: Any) -> Any:
     return v
 
 
+LEADING_COLUMNS = ["store", "item_id", "title", "price", "price_max", "currency", "item_url",
+                   "main_image_url", "image_count", "image_urls"]
+TRAILING_COLUMNS = ["category_path", "availability", "item_specifics", "detail_status",
+                    "first_seen", "details_fetched_at"]
+SPEC_MIN_ITEMS = 20
+CONDITION_KEYS = {"Artikelzustand", "Zustand", "Condition", "Item condition"}
+
+
+def spec_columns(rows: list[dict], min_items: int = SPEC_MIN_ITEMS) -> list[str]:
+    counts: dict[str, int] = {}
+    for r in rows:
+        for k in r.get("specs") or {}:
+            counts[k] = counts.get(k, 0) + 1
+    keep = [k for k, n in counts.items() if n >= min_items and k not in LEADING_COLUMNS + TRAILING_COLUMNS]
+    return sorted(keep, key=lambda k: (k not in CONDITION_KEYS, -counts[k], k.lower()))
+
+
+def flatten(row: dict, spec_cols: list[str]) -> dict:
+    out = {c: row.get(c) for c in LEADING_COLUMNS}
+    specs = row.get("specs") or {}
+    for k in spec_cols:
+        v = specs.get(k, "")
+        out[k] = condition_from_specs({k: v}) if k in CONDITION_KEYS and v else v
+    for c in TRAILING_COLUMNS:
+        out[c] = row.get(c)
+    return out
+
+
 def export(out_dir: Path, slugs: list[str]) -> dict[str, int]:
     exp = out_dir / "output"
     exp.mkdir(parents=True, exist_ok=True)
-    everything, counts = [], {}
+    everything, counts, per_store = [], {}, {}
     for slug in slugs:
         rows = build_rows(out_dir, slug)
         counts[slug] = len(rows)
         everything.extend(rows)
-        _write_csv(exp / f"{slug}.csv", rows)
-    _write_csv(exp / "all_stores.csv", everything)
-    write_json_atomic(exp / "all_stores.json", everything)
-    try:
-        _write_xlsx(exp / "all_stores.xlsx", everything, slugs)
-    except ImportError:
-        log.warning("openpyxl not installed; skipping XLSX")
+        cols = spec_columns(rows)
+        per_store[slug] = (LEADING_COLUMNS + cols + TRAILING_COLUMNS, [flatten(r, cols) for r in rows])
+        _write_csv(exp / f"{slug}.csv", *per_store[slug])
+    all_cols = spec_columns(everything)
+    _write_csv(exp / "all_stores.csv", LEADING_COLUMNS + all_cols + TRAILING_COLUMNS,
+               [flatten(r, all_cols) for r in everything])
+    write_json_atomic(exp / "all_stores.json", [{k: v for k, v in r.items() if k != "item_specifics"} for r in everything])
     summary = {"generated": now_iso(), "counts": counts, "total": len(everything),
                "with_details": sum(1 for r in everything if r["detail_status"] in ("ok", "ended")),
                "ended": sum(1 for r in everything if r["detail_status"] == "ended"),
                "errors": sum(1 for r in everything if r["detail_status"] in ("error", "blocked")),
-               "total_images": sum(r["image_count"] for r in everything)}
+               "partial": sum(1 for r in everything if r["detail_status"] == "partial"),
+               "total_images": sum(r["image_count"] for r in everything),
+               "artikelmerkmale_columns": len(all_cols)}
+    try:
+        _write_xlsx(exp / "all_stores.xlsx", per_store, summary)
+    except ImportError:
+        log.warning("openpyxl not installed; skipping XLSX")
     write_json_atomic(exp / "summary.json", summary)
     log.info("export: %s", json.dumps(summary))
     return counts
 
 
-def _write_csv(path: Path, rows: list[dict]) -> None:
+def _write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
     tmp = path.with_suffix(".csv.tmp")
     with tmp.open("w", newline="", encoding="utf-8-sig") as fh:
-        w = csv.DictWriter(fh, fieldnames=COLUMNS, extrasaction="ignore")
+        w = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         w.writeheader()
         for r in rows:
-            w.writerow({k: _excel_safe(v) for k, v in r.items()})
+            w.writerow({k: _excel_safe(r.get(k)) for k in columns})
     os.replace(tmp, path)
 
 
-def _write_xlsx(path: Path, rows: list[dict], slugs: list[str]) -> None:
+def _write_xlsx(path: Path, per_store: dict[str, tuple[list[str], list[dict]]], summary: dict) -> None:
     from openpyxl import Workbook
     wb = Workbook(write_only=True)
-    for name, subset in [("All stores", rows)] + [(s[:31], [r for r in rows if r["store"] == s]) for s in slugs]:
-        ws = wb.create_sheet(name)
-        ws.append(COLUMNS)
-        for r in subset:
-            ws.append([_excel_safe(r.get(c)) for c in COLUMNS])
+    for slug, (columns, rows) in per_store.items():
+        ws = wb.create_sheet(slug[:31])
+        ws.freeze_panes = "C2"
+        ws.append(columns)
+        for r in rows:
+            ws.append([_excel_safe(r.get(c)) for c in columns])
+    ws = wb.create_sheet("Summary")
+    ws.append(["metric", "value"])
+    for k, v in summary.items():
+        if k == "counts":
+            for store, n in v.items():
+                ws.append([f"products in {store}", n])
+        else:
+            ws.append([k, v])
     tmp = path.with_suffix(".xlsx.tmp")
     wb.save(tmp)
     os.replace(tmp, path)

@@ -19,3 +19,7 @@ graphify-out/
 run_details.sh
 output/all_stores.json
 *.out
+complete_run.sh
+complete_progress.log
+slow_run.sh
+slow_run.out
