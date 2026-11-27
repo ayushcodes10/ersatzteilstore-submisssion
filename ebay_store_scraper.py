@@ -768,6 +768,7 @@ async def scrape_details_fetch(br: Browser, slug: str, domain: str, todo: list[d
     page = await br.new_page()
     total, done, started = len(todo), 0, time.monotonic()
     dead_batches = 0
+    degraded = 0
     try:
         await br.goto(page, store_url)
         i = 0
@@ -810,6 +811,12 @@ async def scrape_details_fetch(br: Browser, slug: str, domain: str, todo: list[d
                 continue_from = [by_id[r["id"]] for r in captcha]
                 todo.extend(continue_from)
                 total = len(todo)
+            partial = sum(1 for r in results if r["kind"] == "ok" and r["data"] and not r["data"]["specs"]
+                          and not dedupe_images(r["data"]["images"]))
+            degraded = degraded + 1 if partial * 2 > len(batch) else 0
+            if degraded >= 2:
+                raise SessionBurnedError("eBay is serving stripped pages to this browser session; "
+                                         "re-run with a fresh --profile to continue")
             if len(blocked) == len(batch):
                 dead_batches += 1
                 if dead_batches >= 5:
