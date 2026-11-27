@@ -1060,6 +1060,10 @@ async def run(a: argparse.Namespace) -> int:
                         await scrape_listing(br, store, cfg)
                     if "details" in a.phases:
                         await scrape_details(br, store, cfg)
+                except SessionBurnedError as e:
+                    failures[slug] = str(e)
+                    log.error("[%s] %s", slug, e)
+                    break
                 except BlockedError as e:
                     failures[slug] = str(e)
                     log.error("[%s] %s", slug, e)
