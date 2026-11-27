@@ -23,3 +23,5 @@ complete_run.sh
 complete_progress.log
 slow_run.sh
 slow_run.out
+publish_loop.sh
+mac_run.out

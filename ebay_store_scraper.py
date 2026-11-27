@@ -9,6 +9,7 @@ import logging
 import os
 import random
 import re
+import shutil
 import signal
 import sys
 import time
@@ -1005,6 +1006,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--load-images", action="store_true", help="let the browser download images (slower)")
     p.add_argument("--restart-listing", action="store_true", help="re-crawl the store grids")
     p.add_argument("--refresh-details", action="store_true", help="re-fetch item pages already done")
+    p.add_argument("--until-complete", action="store_true",
+                   help="keep running with a fresh browser profile each time until every item is complete")
+    p.add_argument("--max-runs", type=int, default=500, help="upper bound on runs for --until-complete")
+    p.add_argument("--cooldown", type=int, default=600,
+                   help="pause in seconds after a run that fails within 3 minutes (--until-complete)")
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
     if a.concurrency < 1 or a.concurrency > 10:
@@ -1078,10 +1084,55 @@ async def run(a: argparse.Namespace) -> int:
     return 0
 
 
+def remaining_items(out_dir: Path, slugs: list[str]) -> int | None:
+    left = 0
+    for slug in slugs:
+        sdir = out_dir / "data" / slug
+        if not (sdir / "listing.jsonl").exists():
+            return None
+        lst = JsonlStore(sdir / "listing.jsonl")
+        lst.close()
+        det = JsonlStore(sdir / "details.jsonl")
+        det.close()
+        left += sum(1 for i in lst.records if not is_complete(det.records.get(i)))
+    return left
+
+
+def run_until_complete(a: argparse.Namespace) -> int:
+    out = Path(a.out).resolve()
+    base = Path(a.profile).resolve()
+    attempt = 0
+    while True:
+        attempt += 1
+        a.profile = str(base.with_name(f"{base.name}-{int(time.time())}"))
+        started = time.monotonic()
+        log.info("run %d with fresh browser profile %s", attempt, Path(a.profile).name)
+        code = asyncio.run(run(a))
+        shutil.rmtree(a.profile, ignore_errors=True)
+        if "listing" in a.phases and all(
+                read_json(out / "data" / slug / "listing_state.json", {}).get("complete") for slug in a.slugs):
+            a.phases = [ph for ph in a.phases if ph != "listing"] or ["details"]
+        left = remaining_items(out, a.slugs)
+        log.info("run %d exited with %d; %s items still incomplete", attempt, code,
+                 "unknown" if left is None else left)
+        if left == 0:
+            if "export" not in a.phases:
+                export(out, a.slugs)
+            return 0
+        if attempt >= a.max_runs:
+            log.error("stopping after %d runs; re-run to continue", attempt)
+            return 2
+        pause = a.cooldown if time.monotonic() - started < 180 else 60
+        log.info("next run in %ds", pause)
+        time.sleep(pause)
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parse_args(argv)
     setup_logging(Path(a.out).resolve(), a.verbose)
     try:
+        if a.until_complete:
+            return run_until_complete(a)
         return asyncio.run(run(a))
     except KeyboardInterrupt:
         log.warning("interrupted; progress is saved, re-run the same command to resume")

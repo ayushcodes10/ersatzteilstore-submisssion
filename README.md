@@ -77,7 +77,14 @@ python ebay_store_scraper.py --phases export
 | `--delay MIN MAX` | Random pause between requests, in seconds |
 | `--max-pages`, `--max-items` | Limits for test runs |
 | `--restart-listing`, `--refresh-details` | Discard saved progress and collect again |
+| `--until-complete` | Keep running, with a fresh browser profile for each run, until every product is complete |
 | `--headless` | Run without a browser window |
+
+For long unattended runs:
+
+```bash
+python ebay_store_scraper.py --until-complete --parallel-fetches 4 --batch-size 100 --delay 1.5 3
+```
 
 Run `python ebay_store_scraper.py --help` for the full list. On macOS, prefix long runs with `caffeinate -i` so the machine does not sleep.
 

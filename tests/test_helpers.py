@@ -183,3 +183,16 @@ def test_stripped_page_is_partial_and_not_complete():
     assert out["status"] == "partial" and not s.is_complete(out)
     assert s.is_complete({"status": "ok", "specs": {"Marke": "X"}, "images": []})
     assert s.is_complete({"status": "ended"}) and not s.is_complete({"status": "ok", "specs": {}, "images": []})
+
+
+def test_remaining_items(tmp_path):
+    d = tmp_path / "data" / "shop"
+    lst = s.JsonlStore(d / "listing.jsonl")
+    lst.put({"item_id": "1"}); lst.put({"item_id": "2"}); lst.put({"item_id": "3"})
+    lst.close()
+    det = s.JsonlStore(d / "details.jsonl")
+    det.put({"item_id": "1", "status": "ok", "specs": {"Marke": "X"}, "images": []})
+    det.put({"item_id": "2", "status": "partial", "specs": {}, "images": []})
+    det.close()
+    assert s.remaining_items(tmp_path, ["shop"]) == 2
+    assert s.remaining_items(tmp_path, ["missing"]) is None
