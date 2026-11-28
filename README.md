@@ -110,7 +110,7 @@ Every row has a title, price, link and main image. Gallery and item-specific col
 
 ## Google Sheets
 
-**Import.** In Google Sheets, choose File > Import > Upload and select `output/all_stores.csv` or one store's CSV.
+**Import.** In Google Sheets, choose File > Import > Upload and select `output/all_stores.xlsx`, then "Replace spreadsheet". This creates one tab per store. A single store's CSV can also be imported into its own tab.
 
 **Automated upload.** `sheets_upload.py` writes an "All stores" tab, one tab per store and a "Summary" tab, using a Google Cloud service account:
 
