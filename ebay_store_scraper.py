@@ -877,7 +877,9 @@ def build_rows(out_dir: Path, slug: str) -> list[dict]:
             "first_seen": L.get("first_seen", ""),
             "details_fetched_at": D.get("fetched_at", ""),
         })
+    rank = {"ok": 0, "ended": 1, "partial": 2, "blocked": 3, "error": 3, "not_fetched": 4}
     rows.sort(key=lambda r: r["item_id"], reverse=True)
+    rows.sort(key=lambda r: rank.get(r["detail_status"], 5))
     return rows
 
 
