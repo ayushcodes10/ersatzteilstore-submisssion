@@ -1,15 +1,15 @@
 {
-  "generated": "2026-11-28T03:25:34+00:00",
+  "generated": "2026-11-28T03:41:03+00:00",
   "counts": {
     "etvggmbhersatzteilehausgerate": 22859,
     "k11ersatzteilshop": 22709,
     "ersatzteilwelt24": 27314
   },
   "total": 72882,
-  "with_details": 29944,
+  "with_details": 30403,
   "ended": 0,
-  "errors": 4693,
-  "partial": 329,
-  "total_images": 149628,
+  "errors": 4273,
+  "partial": 290,
+  "total_images": 150620,
   "artikelmerkmale_columns": 36
 }
