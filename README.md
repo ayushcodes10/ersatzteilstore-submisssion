@@ -11,7 +11,7 @@ A resumable Python tool that extracts the complete product catalogue of eBay sto
 | [ersatzteilwelt24](https://www.ebay.de/str/ersatzteilwelt24) | 27,314 |
 | **Total** | **72,882** |
 
-The results are in [`output/`](output): one CSV per store, `all_stores.xlsx` (one tab per store, every Artikelmerkmal as a column) and `summary.json`. Running the export locally also writes the combined `all_stores.csv` and `all_stores.json`, which are too large to keep in the repository.
+The results are in [`output/`](output): one CSV and one XLSX per store, `all_stores.xlsx` (all stores as tabs, every Artikelmerkmal as a column) and `summary.json`. Running the export locally also writes the combined `all_stores.csv` and `all_stores.json`, which are too large to keep in the repository.
 
 ## How it works
 

@@ -172,6 +172,7 @@ def test_export_writes_store_tabs(tmp_path):
     s.export(tmp_path, ["shop"])
     wb = load_workbook(tmp_path / "output" / "all_stores.xlsx", read_only=True)
     assert wb.sheetnames == ["shop", "Summary"]
+    assert load_workbook(tmp_path / "output" / "shop.xlsx", read_only=True).sheetnames == ["shop"]
     header = [c.value for c in next(wb["shop"].iter_rows(max_row=1))]
     assert "Marke" in header and header.index("Marke") > header.index("image_urls")
 

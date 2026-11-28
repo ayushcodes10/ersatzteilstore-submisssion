@@ -984,6 +984,8 @@ def export(out_dir: Path, slugs: list[str]) -> dict[str, int]:
                "artikelmerkmale_columns": len(all_cols)}
     try:
         _write_xlsx(exp / "all_stores.xlsx", per_store, summary)
+        for slug, data in per_store.items():
+            _write_xlsx(exp / f"{slug}.xlsx", {slug: data}, None)
     except ImportError:
         log.warning("openpyxl not installed; skipping XLSX")
     write_json_atomic(exp / "summary.json", summary)
@@ -1001,7 +1003,7 @@ def _write_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
     os.replace(tmp, path)
 
 
-def _write_xlsx(path: Path, per_store: dict[str, tuple[list[str], list[dict]]], summary: dict) -> None:
+def _write_xlsx(path: Path, per_store: dict[str, tuple[list[str], list[dict]]], summary: dict | None) -> None:
     from openpyxl import Workbook
     wb = Workbook(write_only=True)
     for slug, (columns, rows) in per_store.items():
@@ -1010,6 +1012,11 @@ def _write_xlsx(path: Path, per_store: dict[str, tuple[list[str], list[dict]]], 
         ws.append(columns)
         for r in rows:
             ws.append([_excel_safe(r.get(c)) for c in columns])
+    if summary is None:
+        tmp = path.with_suffix(".xlsx.tmp")
+        wb.save(tmp)
+        os.replace(tmp, path)
+        return
     ws = wb.create_sheet("Summary")
     ws.append(["metric", "value"])
     for k, v in summary.items():
