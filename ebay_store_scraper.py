@@ -771,6 +771,14 @@ def build_detail(item_id: str, d: dict) -> dict:
     }
 
 
+def session_degraded(batch_len: int, partial: int, completed: int) -> bool:
+    if batch_len == 0:
+        return False
+    if partial * 2 > batch_len:
+        return True
+    return completed * 10 < batch_len and partial * 4 >= batch_len
+
+
 def batch_timeout(batch_len: int, cfg: Config) -> float:
     rounds = -(-batch_len // max(1, cfg.parallel_fetches))
     per_item = FETCH_TIMEOUT_MS / 1000 * cfg.block_retries + 2 * cfg.block_retries
@@ -840,7 +848,9 @@ async def scrape_details_fetch(br: Browser, slug: str, domain: str, todo: list[d
                 total = len(todo)
             partial = sum(1 for r in results if r["kind"] == "ok" and r["data"] and not r["data"]["specs"]
                           and not dedupe_images(r["data"]["images"]))
-            degraded = degraded + 1 if partial * 2 > len(batch) else 0
+            completed = sum(1 for r in results if r["kind"] == "ok" and r["data"]
+                            and (r["data"]["specs"] or dedupe_images(r["data"]["images"])))
+            degraded = degraded + 1 if session_degraded(len(batch), partial, completed) else 0
             if degraded >= 2:
                 raise SessionBurnedError("eBay is serving stripped pages to this browser session; "
                                          "re-run with a fresh --profile to continue")
