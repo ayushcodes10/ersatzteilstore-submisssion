@@ -29,6 +29,7 @@ ITEMS_PER_PAGE = 240
 SORT_NEWEST_FIRST = "10"
 IMAGE_SIZE = 1600
 FULL_PAGE = 200
+FETCH_TIMEOUT_MS = 30000
 
 log = logging.getLogger("ebay_scraper")
 
@@ -318,7 +319,7 @@ EXTRACT_JS = r"""
 DETAIL_JS = "() => (" + EXTRACT_JS + ")(document, location.href)"
 
 FETCH_JS = r"""
-async ({ids, parallel, retries}) => {
+async ({ids, parallel, retries, timeoutMs}) => {
   const extract = """ + EXTRACT_JS + r""";
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const results = {};
@@ -327,7 +328,14 @@ async ({ids, parallel, retries}) => {
     let last = '';
     for (let a = 0; a < retries; a++) {
       try {
-        const r = await fetch('/itm/' + id, {credentials: 'include', redirect: 'follow'});
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), timeoutMs);
+        let r;
+        try {
+          r = await fetch('/itm/' + id, {credentials: 'include', redirect: 'follow', signal: ctl.signal});
+        } finally {
+          clearTimeout(timer);
+        }
         if (/splashui\/captcha/.test(r.url)) return {id, kind: 'captcha'};
         if (r.status === 200) {
           const html = await r.text();
@@ -763,6 +771,12 @@ def build_detail(item_id: str, d: dict) -> dict:
     }
 
 
+def batch_timeout(batch_len: int, cfg: Config) -> float:
+    rounds = -(-batch_len // max(1, cfg.parallel_fetches))
+    per_item = FETCH_TIMEOUT_MS / 1000 * cfg.block_retries + 2 * cfg.block_retries
+    return rounds * per_item + 60
+
+
 async def scrape_details_fetch(br: Browser, slug: str, domain: str, todo: list[dict],
                                details: JsonlStore, cfg: Config) -> None:
     store_url = f"https://{domain}/str/{slug}"
@@ -778,9 +792,21 @@ async def scrape_details_fetch(br: Browser, slug: str, domain: str, todo: list[d
                 raise asyncio.CancelledError()
             batch = todo[i:i + cfg.batch_size]
             try:
-                results = await page.evaluate(FETCH_JS, {"ids": [r["item_id"] for r in batch],
-                                                         "parallel": cfg.parallel_fetches,
-                                                         "retries": cfg.block_retries})
+                results = await asyncio.wait_for(
+                    page.evaluate(FETCH_JS, {"ids": [r["item_id"] for r in batch],
+                                             "parallel": cfg.parallel_fetches,
+                                             "retries": cfg.block_retries,
+                                             "timeoutMs": FETCH_TIMEOUT_MS}),
+                    timeout=batch_timeout(len(batch), cfg))
+            except asyncio.TimeoutError:
+                log.warning("[%s] batch did not finish in time; reopening the tab", slug)
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                page = await br.new_page()
+                await br.goto(page, store_url)
+                continue
             except Exception as e:
                 log.warning("[%s] batch evaluate failed (%s); reloading store page", slug, str(e).splitlines()[0])
                 await br.goto(page, store_url)

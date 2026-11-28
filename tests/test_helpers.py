@@ -207,3 +207,11 @@ def test_spec_columns_share_threshold_and_case_merge():
     assert cols == ["Marke", "Geeignet für"]
     flat = s.flatten(rows[95], cols)
     assert flat["Geeignet für"] == "Trockner"
+
+
+def test_batch_timeout_is_bounded_and_scales():
+    cfg = s.Config(out_dir=s.Path("."), profile_dir=s.Path("."), headless=False, delay=(1, 2), concurrency=1,
+                   max_pages=1, max_items=None, captcha_timeout=1, retries=1, nav_timeout=1, refresh_details=False,
+                   block_retries=3, parallel_fetches=4)
+    small, large = s.batch_timeout(4, cfg), s.batch_timeout(100, cfg)
+    assert 60 < small < large < 4 * 3600
