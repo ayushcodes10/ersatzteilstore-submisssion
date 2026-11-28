@@ -892,24 +892,41 @@ LEADING_COLUMNS = ["store", "item_id", "title", "price", "price_max", "currency"
 TRAILING_COLUMNS = ["category_path", "availability", "item_specifics", "detail_status",
                     "first_seen", "details_fetched_at"]
 SPEC_MIN_ITEMS = 20
+SPEC_MIN_SHARE = 0.05
 CONDITION_KEYS = {"Artikelzustand", "Zustand", "Condition", "Item condition"}
 
 
-def spec_columns(rows: list[dict], min_items: int = SPEC_MIN_ITEMS) -> list[str]:
+def spec_key(k: str) -> str:
+    return re.sub(r"\s+", " ", k).strip().casefold()
+
+
+def spec_columns(rows: list[dict], min_items: int = SPEC_MIN_ITEMS, min_share: float = SPEC_MIN_SHARE) -> list[str]:
+    with_specs = [r for r in rows if r.get("specs")]
+    if not with_specs:
+        return []
     counts: dict[str, int] = {}
-    for r in rows:
-        for k in r.get("specs") or {}:
-            counts[k] = counts.get(k, 0) + 1
-    keep = [k for k, n in counts.items() if n >= min_items and k not in LEADING_COLUMNS + TRAILING_COLUMNS]
-    return sorted(keep, key=lambda k: (k not in CONDITION_KEYS, -counts[k], k.lower()))
+    spellings: dict[str, dict[str, int]] = {}
+    for r in with_specs:
+        for k in {spec_key(k): k for k in r["specs"]}.values():
+            key = spec_key(k)
+            counts[key] = counts.get(key, 0) + 1
+            spellings.setdefault(key, {})[k] = spellings.setdefault(key, {}).get(k, 0) + 1
+    reserved = {c.casefold() for c in LEADING_COLUMNS + TRAILING_COLUMNS}
+    needed = max(min_items, int(len(with_specs) * min_share))
+    keep = [max(spellings[k], key=spellings[k].get) for k, n in counts.items() if n >= needed and k not in reserved]
+    condition = {spec_key(k) for k in CONDITION_KEYS}
+    return sorted(keep, key=lambda k: (spec_key(k) not in condition, -counts[spec_key(k)], k.casefold()))
 
 
 def flatten(row: dict, spec_cols: list[str]) -> dict:
     out = {c: row.get(c) for c in LEADING_COLUMNS}
-    specs = row.get("specs") or {}
-    for k in spec_cols:
-        v = specs.get(k, "")
-        out[k] = condition_from_specs({k: v}) if k in CONDITION_KEYS and v else v
+    specs = {}
+    for k, v in (row.get("specs") or {}).items():
+        specs.setdefault(spec_key(k), v)
+    condition = {spec_key(k) for k in CONDITION_KEYS}
+    for col in spec_cols:
+        v = specs.get(spec_key(col), "")
+        out[col] = condition_from_specs({"Artikelzustand": v}) if spec_key(col) in condition and v else v
     for c in TRAILING_COLUMNS:
         out[c] = row.get(c)
     return out

@@ -148,7 +148,7 @@ def test_build_detail_ended_and_redirect():
 def test_spec_columns_and_flatten():
     rows = [{"specs": {"Marke": "Beko", "Artikelzustand": "Neu: Neuer, unbenutzter ... Mehr zum Thema", "Modell": "X"}}] * 3
     rows += [{"specs": {"Marke": "Bosch", "Selten": "y"}}]
-    cols = s.spec_columns(rows, min_items=2)
+    cols = s.spec_columns(rows, min_items=2, min_share=0)
     assert cols[0] == "Artikelzustand" and cols[1] == "Marke" and "Selten" not in cols
     flat = s.flatten({**rows[0], "title": "t", "item_id": "1"}, cols)
     assert flat["Marke"] == "Beko" and flat["Artikelzustand"] == "Neu" and flat["title"] == "t"
@@ -196,3 +196,14 @@ def test_remaining_items(tmp_path):
     det.close()
     assert s.remaining_items(tmp_path, ["shop"]) == 2
     assert s.remaining_items(tmp_path, ["missing"]) is None
+
+
+def test_spec_columns_share_threshold_and_case_merge():
+    common = {"Marke": "X", "Geeignet für": "Waschmaschine"}
+    rows = [{"specs": dict(common)} for _ in range(90)]
+    rows += [{"specs": {"Marke": "X", "Geeignet Für": "Trockner"}} for _ in range(8)]
+    rows += [{"specs": {"Marke": "X", "Selten": "y"}} for _ in range(2)]
+    cols = s.spec_columns(rows, min_items=1, min_share=0.05)
+    assert cols == ["Marke", "Geeignet für"]
+    flat = s.flatten(rows[95], cols)
+    assert flat["Geeignet für"] == "Trockner"
